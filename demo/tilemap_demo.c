@@ -17,6 +17,10 @@
 #include "sprite.h"
 #include "sdl_wrapper.h"
 #include "level.h"
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+
 
 const char *PRESS_F_PATH = "assets/ui/pressF.png";
 const double level_up_buffs[5] = {/*HEALTH*/ 10, /*ATTACK*/ 5, /*COOLDOWN*/ .8, /*SPEED*/ 50, /*INVULNERABILITY*/ 1.5};
@@ -96,9 +100,19 @@ void display_experience(game_t *game, scene_t *scene, body_t *player) {
     }
     list_free(coins);
 }
+game_t *game;
+bool inited = false;
 
-int main(int arg_c, char *arg_v[]) {
-    srand(time(0));
+double seconds = 0;
+
+bool spacebar_pressed = false;
+bool entered_door = false;
+double powerup_timer = POWERUP_TIMER;
+
+size_t cur_room;
+
+void init() {
+  srand(time(0));
     vector_t bottom_left = {.x = 0, .y = 0};
     vector_t top_right = {.x = MAX_WIDTH, .y = MAX_HEIGHT};
     sdl_init(bottom_left, top_right);
@@ -114,7 +128,7 @@ int main(int arg_c, char *arg_v[]) {
         .atk_type = RADIAL_SHOOTER
     };
 
-    game_t *game = game_init(4);                                                                                                                                                                               game_init(4);
+    game = game_init(4);
 
     map_register_tiles(game);
     map_register_collider_tiles();
@@ -133,155 +147,172 @@ int main(int arg_c, char *arg_v[]) {
 
     random_room_music();
 
-    double seconds = 0;
-
-    bool spacebar_pressed = false;
-    bool entered_door = false;
-    double powerup_timer = POWERUP_TIMER;
-
-    size_t cur_room;
-
+    
     sdl_on_key(on_key);
+}
 
-    while(!sdl_is_done(game)) {
-        handle_movement_shooting(game);
-        if (!scene_is_menu(game_get_current_scene(game)) && !spacebar_pressed) {
-            spacebar_pressed = true;
+void c_main(){
+    if (!inited) {
+        init();
+        inited = true;
+    }
+    
+    handle_movement_shooting(game);
+    if (!scene_is_menu(game_get_current_scene(game)) && !spacebar_pressed) {
+        spacebar_pressed = true;
+        make_room(game);
+        ui_text_t *level_text = ui_text_init("Level 1", (vector_t) {LVL_TEXT_PADDING.x, MAX_HEIGHT - LVL_TEXT_PADDING.y}, INFINITY, EXP_TEXT);
+        scene_add_UI_text(game_get_current_scene(game), level_text);
+        cur_room = game_get_room(game);
+    }
+
+    scene_t *scene = game_get_current_scene(game);
+    double dt = time_since_last_tick();
+    if(!game_is_paused(game)) {
+        seconds += dt;
+        if (seconds > MIN_TIME_HANDLE_ENEMIES) {
+            handle_enemies(game, dt);
+            seconds = 0;
+        }
+        scene_tick(scene, dt);
+        sdl_set_camera(vec_subtract(body_get_centroid(game_get_player(game)), WINDOW_CENTER));
+        body_t *player = game_get_player(game);
+
+        // Player health display (heart) adjustment
+        display_hearts(game, scene, player);
+
+        // Player experience display adjustment
+        display_experience(game, scene, player);
+
+        // Interaction UI display
+        bool in_flag = entered_door;
+        entered_door = UI_handle_door_interaction(game, entered_door);
+        if(entered_door == false && in_flag == false) { // Leaving
+            list_t *UIs = scene_get_UI_components(scene);
+            for (size_t i = 0; i < list_size(UIs); i++) {
+                if (strcmp(UI_get_type(list_get(UIs, i)), "PRESS_F") == 0 || strcmp(UI_get_type(list_get(UIs, i)), "MURAL") == 0) {
+                    list_remove(UIs, i);
+                }
+            }
+        }
+
+        // Interaction with Level Stuff
+        list_t *UI_comps = scene_get_UI_components(scene);
+        if (list_size(UI_comps) != 0) {
+            for (size_t i = 0; i < list_size(UI_comps); i++) {
+                if (strcmp(UI_get_type(list_get(UI_comps, i)), "LEVEL_UP") == 0) {
+                    if (powerup_timer > 0) powerup_timer -= dt;
+                    else {
+                        list_remove (UI_comps, i);
+                        powerup_timer = POWERUP_TIMER;
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Levelling up + Text Display
+        stats_info_t player_stats = body_get_stats_info(player);
+        char level[100];
+        sprintf(level, "Level %d", player_stats.level);
+
+        int level_up_exp = round(INIT_LEVEL_EXP * pow(LEVEL_EXP_FACTOR, player_stats.level - 1));
+        if (player_stats.experience >= level_up_exp) {
+            ui_text_t *level_text;
+            list_t *texts = scene_get_UI_texts(scene);
+            for (size_t i = 0; i < list_size(texts); i++) {
+                if (ui_text_get_type(list_get(texts, i)) == EXP_TEXT) {
+                    level_text = list_get(texts, i);
+                    break;
+                }
+            }
+            player_stats.experience -= level_up_exp;
+            player_stats.level++;
+            char level_cur[100];
+            sprintf(level_cur, "Level %d", player_stats.level);
+            ui_text_set_message(level_text, level_cur);
+            int buff = rand() % NUM_LVL_BUFFS;
+            sprite_t *powerup_sprite;
+            switch (buff) {
+                case 0:
+                    player_stats.health += level_up_buffs[0];
+                    size_t num_hearts = list_size(get_player_hearts(scene));
+                    UI_t *heart = make_heart(HEART_PADDING + HEART_SPRITE_SIZE * (num_hearts) + NEW_HEART_PADDING, MAX_HEIGHT - HEART_SPRITE_SIZE - HEART_PADDING, game_get_sprite(game, EMPTY_HEART_ID), "PLAYER_HEART");
+                    scene_add_UI_component(scene, heart);
+                    powerup_sprite = game_get_sprite(game, HP_POWERUP);
+                    break;
+                case 1:
+                    player_stats.attack += level_up_buffs[1];
+                    powerup_sprite = game_get_sprite(game, ATK_POWERUP);
+                    break;
+                case 2:
+                    player_stats.cooldown *= level_up_buffs[2];
+                    powerup_sprite = game_get_sprite(game, CD_POWERUP);
+                    break;
+                case 3:
+                    player_stats.speed += level_up_buffs[3];
+                    powerup_sprite = game_get_sprite(game, SPD_POWERUP);
+                    break;
+                case 4:
+                    player_stats.invulnerability_timer *= level_up_buffs[4];
+                    powerup_sprite = game_get_sprite(game, INV_POWERUP);
+                    break;
+            }
+            rect_t player_hitbox = body_get_hitbox(player);
+            double buffer_dist = 40;
+            SDL_Rect sprite_size = sprite_get_shape(powerup_sprite, 1);
+            UI_t *component = UI_init(powerup_sprite, (rect_t) {WINDOW_CENTER.x - sprite_size.w/4, WINDOW_CENTER.y + player_hitbox.h/2 + buffer_dist, sprite_size.w/2, sprite_size.h/2}, "LEVEL_UP", LEVEL_POWERUP_SCALE);
+            scene_add_UI_component(scene, component);
+            body_set_stats_info(player, player_stats);
+        }
+        if (cur_room != game_get_room(game) && spacebar_pressed) {
+            scene_add_UI_text(scene, ui_text_init(level, (vector_t) {LVL_TEXT_PADDING.x, MAX_HEIGHT - LVL_TEXT_PADDING.y}, INFINITY, EXP_TEXT));
+            cur_room = game_get_room(game);
+        } else if (cur_room == game_get_room(game) && spacebar_pressed) {
+            ui_text_t *level_text;
+            list_t *texts = scene_get_UI_texts(scene);
+            for (size_t i = 0; i < list_size(texts); i++) {
+                if (ui_text_get_type(list_get(texts, i)) == EXP_TEXT) {
+                    level_text = list_get(texts, i);
+                    break;
+                }
+            }
+            ui_text_set_message(level_text, level);
+        }
+
+        if (body_get_stats_info(player).health <= 0) {
+            game_set_room(game, 0);
             make_room(game);
-            ui_text_t *level_text = ui_text_init("Level 1", (vector_t) {LVL_TEXT_PADDING.x, MAX_HEIGHT - LVL_TEXT_PADDING.y}, INFINITY, EXP_TEXT);
-            scene_add_UI_text(game_get_current_scene(game), level_text);
+            random_room_music();
+            stats_info_t player_info = body_get_stats_info(game_get_player(game));
+            player_info.health = list_size(get_player_hearts(game_get_current_scene(game))) * HEALTH_PER_HEART;
+            body_set_stats_info(game_get_player(game), player_info);
+            char level[100];
+            sprintf(level, "Level %d", player_info.level);
+            scene_add_UI_text(game_get_current_scene(game), ui_text_init(level, (vector_t) {LVL_TEXT_PADDING.x, MAX_HEIGHT - LVL_TEXT_PADDING.y}, INFINITY, EXP_TEXT));
             cur_room = game_get_room(game);
         }
-
-        scene_t *scene = game_get_current_scene(game);
-        double dt = time_since_last_tick();
-        if(!game_is_paused(game)) {
-            seconds += dt;
-            if (seconds > MIN_TIME_HANDLE_ENEMIES) {
-                handle_enemies(game, dt);
-                seconds = 0;
-            }
-            scene_tick(scene, dt);
-            sdl_set_camera(vec_subtract(body_get_centroid(game_get_player(game)), WINDOW_CENTER));
-            body_t *player = game_get_player(game);
-
-            // Player health display (heart) adjustment
-            display_hearts(game, scene, player);
-
-            // Player experience display adjustment
-            display_experience(game, scene, player);
-
-            // Interaction UI display
-            bool in_flag = entered_door;
-            entered_door = UI_handle_door_interaction(game, entered_door);
-            if(entered_door == false && in_flag == false) { // Leaving
-                list_t *UIs = scene_get_UI_components(scene);
-                for (size_t i = 0; i < list_size(UIs); i++) {
-                    if (strcmp(UI_get_type(list_get(UIs, i)), "PRESS_F") == 0 || strcmp(UI_get_type(list_get(UIs, i)), "MURAL") == 0) {
-                        list_remove(UIs, i);
-                    }
-                }
-            }
-
-            // Interaction with Level Stuff
-            list_t *UI_comps = scene_get_UI_components(scene);
-            if (list_size(UI_comps) != 0) {
-                for (size_t i = 0; i < list_size(UI_comps); i++) {
-                    if (strcmp(UI_get_type(list_get(UI_comps, i)), "LEVEL_UP") == 0) {
-                        if (powerup_timer > 0) powerup_timer -= dt;
-                        else {
-                            list_remove (UI_comps, i);
-                            powerup_timer = POWERUP_TIMER;
-                        }
-                        break;
-                    }
-                }
-            }
-
-            // Levelling up + Text Display
-            stats_info_t player_stats = body_get_stats_info(player);
-            char level[100];
-            sprintf(level, "Level %d", player_stats.level);
-
-            int level_up_exp = round(INIT_LEVEL_EXP * pow(LEVEL_EXP_FACTOR, player_stats.level - 1));
-            if (player_stats.experience >= level_up_exp) {
-                ui_text_t *level_text;
-                list_t *texts = scene_get_UI_texts(scene);
-                for (size_t i = 0; i < list_size(texts); i++) {
-                    if (ui_text_get_type(list_get(texts, i)) == EXP_TEXT) {
-                        level_text = list_get(texts, i);
-                        break;
-                    }
-                }
-                player_stats.experience -= level_up_exp;
-                player_stats.level++;
-                char level_cur[100];
-                sprintf(level_cur, "Level %d", player_stats.level);
-                ui_text_set_message(level_text, level_cur);
-                int buff = rand() % NUM_LVL_BUFFS;
-                sprite_t *powerup_sprite;
-                switch (buff) {
-                    case 0:
-                        player_stats.health += level_up_buffs[0];
-                        size_t num_hearts = list_size(get_player_hearts(scene));
-                        UI_t *heart = make_heart(HEART_PADDING + HEART_SPRITE_SIZE * (num_hearts) + NEW_HEART_PADDING, MAX_HEIGHT - HEART_SPRITE_SIZE - HEART_PADDING, game_get_sprite(game, EMPTY_HEART_ID), "PLAYER_HEART");
-                        scene_add_UI_component(scene, heart);
-                        powerup_sprite = game_get_sprite(game, HP_POWERUP);
-                        break;
-                    case 1:
-                        player_stats.attack += level_up_buffs[1];
-                        powerup_sprite = game_get_sprite(game, ATK_POWERUP);
-                        break;
-                    case 2:
-                        player_stats.cooldown *= level_up_buffs[2];
-                        powerup_sprite = game_get_sprite(game, CD_POWERUP);
-                        break;
-                    case 3:
-                        player_stats.speed += level_up_buffs[3];
-                        powerup_sprite = game_get_sprite(game, SPD_POWERUP);
-                        break;
-                    case 4:
-                        player_stats.invulnerability_timer *= level_up_buffs[4];
-                        powerup_sprite = game_get_sprite(game, INV_POWERUP);
-                        break;
-                }
-                rect_t player_hitbox = body_get_hitbox(player);
-                double buffer_dist = 40;
-                SDL_Rect sprite_size = sprite_get_shape(powerup_sprite, 1);
-                UI_t *component = UI_init(powerup_sprite, (rect_t) {WINDOW_CENTER.x - sprite_size.w/4, WINDOW_CENTER.y + player_hitbox.h/2 + buffer_dist, sprite_size.w/2, sprite_size.h/2}, "LEVEL_UP", LEVEL_POWERUP_SCALE);
-                scene_add_UI_component(scene, component);
-                body_set_stats_info(player, player_stats);
-            }
-            if (cur_room != game_get_room(game) && spacebar_pressed) {
-                scene_add_UI_text(scene, ui_text_init(level, (vector_t) {LVL_TEXT_PADDING.x, MAX_HEIGHT - LVL_TEXT_PADDING.y}, INFINITY, EXP_TEXT));
-                cur_room = game_get_room(game);
-            } else if (cur_room == game_get_room(game) && spacebar_pressed) {
-                ui_text_t *level_text;
-                list_t *texts = scene_get_UI_texts(scene);
-                for (size_t i = 0; i < list_size(texts); i++) {
-                    if (ui_text_get_type(list_get(texts, i)) == EXP_TEXT) {
-                        level_text = list_get(texts, i);
-                        break;
-                    }
-                }
-                ui_text_set_message(level_text, level);
-            }
-
-            if (body_get_stats_info(player).health <= 0) {
-                game_set_room(game, 0);
-                make_room(game);
-                random_room_music();
-                stats_info_t player_info = body_get_stats_info(game_get_player(game));
-                player_info.health = list_size(get_player_hearts(game_get_current_scene(game))) * HEALTH_PER_HEART;
-                body_set_stats_info(game_get_player(game), player_info);
-                char level[100];
-                sprintf(level, "Level %d", player_info.level);
-                scene_add_UI_text(game_get_current_scene(game), ui_text_init(level, (vector_t) {LVL_TEXT_PADDING.x, MAX_HEIGHT - LVL_TEXT_PADDING.y}, INFINITY, EXP_TEXT));
-                cur_room = game_get_room(game);
-            }
-        }
-        sdl_render_game(game);
     }
-    game_free(game);
-    return 0;
+    sdl_render_game(game);
+
+    if (sdl_is_done(game)) {
+        #ifdef __EMSCRIPTEN__
+        emscripten_cancel_main_loop();
+        #else
+        exit(0);
+        #endif
+        return;
+    }
 }
+
+
+int main() {
+#ifdef __EMSCRIPTEN__
+    emscripten_set_main_loop(c_main, 0, 1);
+#else
+    while (1) {
+        c_main();
+    }
+#endif
+}
+

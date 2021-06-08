@@ -3,7 +3,7 @@
 const size_t NUM_TILES = 40;
 const size_t NUM_SPRITES = 40;
 const size_t INITIAL_TILE_INTERACTORS;
-const size_t ROOMS_PER_LEVEL;
+extern const size_t ROOMS_PER_LEVEL;
 
 typedef struct game {
     list_t *tile_infos;

@@ -4,7 +4,19 @@ DEMOS = tilemap_demo
 STAFF_LIBS = test_util sdl_wrapper
 # List of C files in "libraries" that you will write.
 # This also defines the order in which the tests are run.
-STUDENT_LIBS = game vector list color body scene forces collision tile map enemy sprite projectile keyhandler ui_component level user_interface text
+STUDENT_LIBS = game vector list body scene forces collision tile map enemy sprite projectile keyhandler ui_component level user_interface text sound 
+EMCC = emcc
+EMCC_FLAGS =  -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=655360000 -s USE_SDL=2 -s USE_SDL_GFX=2 -s USE_SDL_IMAGE=2 -s SDL2_IMAGE_FORMATS='["png"]' -s USE_SDL_TTF=2 -s USE_SDL_MIXER=2 -s ASSERTIONS=1 -O3 --preload-file assets --use-preload-plugins
+WASM_STUDENT_OBJS = $(addprefix out/,$(STUDENT_LIBS:=.wasm.o))
+out/%.wasm.o: library/%.c # source file may be found in "library"
+	$(EMCC) $(EMCC_FLAGS) -c $(CFLAGS) $^ -o $@
+out/%.wasm.o: demo/%.c # or "demo"
+	$(EMCC) $(EMCC_FLAGS) -c $(CFLAGS) $^ -o $@
+
+bin/tunnels.html: out/tilemap_demo.wasm.o out/sdl_wrapper.wasm.o $(WASM_STUDENT_OBJS)
+		$(EMCC) $(EMCC_FLAGS) $(CFLAGS) $(LIBS) $^ -o $@
+
+
 
 # If we're not on Windows...
 ifneq ($(OS), Windows_NT)
@@ -18,7 +30,7 @@ CC = clang
 # -fno-omit-frame-pointer allows stack traces to be generated
 #   (take CS 24 for a full explanation)
 # -fsanitize=address enables asan
-CFLAGS = -Iinclude $(shell sdl2-config --cflags | sed -e "s/include\/SDL2/include/") -Wall -g -fno-omit-frame-pointer -fsanitize=address -Wno-nullability-completeness
+CFLAGS = -Iinclude $(shell sdl2-config --cflags | sed -e "s/include\/SDL2/include/") -Wall -g -fno-omit-frame-pointer 
 
 # Compiler flag that links the program with the math library
 LIB_MATH = -lm
