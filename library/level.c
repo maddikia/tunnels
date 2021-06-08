@@ -77,8 +77,8 @@ const double PLAYER_SCALE = 4;
 const double PLAYER_EXP = 100;
 const double PLAYER_EXP_MULTIP = 1.5;
 
-const char *PLAYER_HEART = "PLAYER HEART";
-const char *PLAYER_COIN = "PLAYER COIN";
+const char *PLAYER_HEART = "PLAYER_HEART";
+const char *PLAYER_COIN = "PLAYER_COIN";
 const char *HEALTH_TEXT = "HEALTH";
 const char *EXPERIENCE_TEXT = "EXPERIENCE";
 const char *START_TEXT = "START";
